@@ -1,0 +1,220 @@
+---
+  title: "TCGA_Process_LIVER.Rmd"
+output: html_document
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## R Markdown
+```{r}
+# BiocManager::install("TCGAbiolinks")
+# https://bioconductor.org/packages/devel/bioc/vignettes/TCGAbiolinks/inst/doc/query.html
+library(TCGAbiolinks)
+library(plyr)
+
+
+# Hepatocellular Carcinoma
+x = GDCquery(project = 'TCGA-LIHC',
+              data.category = "Transcriptome Profiling",
+              data.type = "Gene Expression Quantification",
+              workflow.type = "STAR - Counts")
+GDCdownload(x)
+# don't need this, for sanity checking
+#x = TCGAbiolinks::getResults(query)
+
+# get the expression data
+expdat <- GDCprepare(query = x,
+                     save = F,
+                     summarizedExperiment = F)
+
+# get the clinical information
+clin = GDCquery_clinic("TCGA-LIHC")
+
+###############################################################
+#levels(factor(clin$primary_diagnosis)) - remove non Hepatocellular carcinoma - 8 samples
+# get 369 patients
+clin_hep <- clin[grepl("Hepatocellular carcinoma",clin$primary_diagnosis),]
+
+# get just the tpms
+expdat_tpm <- expdat[,grepl("tpm",colnames(expdat)), with=FALSE]
+
+# make column names match the clin_hep
+colnames(expdat_tpm) <- gsub("tpm_unstranded_","",colnames(expdat_tpm))
+colnames(expdat_tpm) <- gsub("(TCGA\\-..\\-....)-.*","\\1",colnames(expdat_tpm))
+rownames(expdat_tpm) <- expdat$gene_name
+
+# remove 6 samples that do not have tpm expression data - now have 363
+clin_hep <- clin_hep[clin_hep$submitter_id %in% colnames(expdat_tpm),]
+
+# remove all stage IV cancers, now have 358 samples
+clin_hep <- clin_hep[!grepl("IV",clin_hep$ajcc_pathologic_stage),]
+
+# get expdat_tpm to be 358 samples in the same order as the clin_hep
+expdat_tpm <- subset(expdat_tpm,select=clin_hep$submitter_id)
+
+clin_hep$OS <- mapvalues(clin_hep$vital_status, from=c("Alive","Dead","Not Reported"), to=c(0,1,0))
+clin_hep$OS <- as.integer(clin_hep$OS)
+
+clin_hep$OS.time <- 0
+clin_hep[which(clin_hep$OS == 1),"OS.time"] <- clin_hep[which(clin_hep$OS == 1),"days_to_death"]
+clin_hep[which(clin_hep$OS == 0),"OS.time"] <- clin_hep[which(clin_hep$OS == 0),"days_to_last_follow_up"]
+
+
+
+
+
+```
+
+
+```{r}
+# install.packages("survminer")
+# library("survminer")
+# install.packages("survival")
+# library("survival")
+
+# get the expression classification per gene of interest and make Kaplan-Meir plot
+
+pdfPath = "/home/alisa/Moll_liver/survival_top_20.pdf"
+pdf(file=pdfPath) 
+topTwenty <- toupper(c("NOP16", "FBXW11","Malat1","Trim71","Xpo1","Ammecr1","Ccne2","Usp37","Zscan26","Ogt","Tspan15","Trim37","Pds5a","Fzd5","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1"))
+for (gname in topTwenty) {
+  clin_hep$expression_class <- "Low"
+  gene_of_intresest_idx <- which(expdat$gene_name==gname)
+  med <- median(as.numeric(expdat_tpm[gene_of_intresest_idx,]))
+  clin_hep[which(expdat_tpm[gene_of_intresest_idx,] > med),"expression_class"] <- "High"
+  
+  
+  ## Build your survival object
+  clin_hep$SurvObj = Surv(time = clin_hep$OS.time,
+                        event = clin_hep$OS == 1)
+  
+  ## Make your logrank fit
+  fit <- with(clin_hep, survfit(SurvObj ~ expression_class,
+                              type = "kaplan-meier"))
+  ## Plot it
+  survplot <- ggsurvplot(fit,
+             data = clin_hep,
+             pval = TRUE,
+             censor = TRUE,
+             surv.mean.line = "hv",
+             legend.title = paste(gname, "Expression"),
+             xlab = "Time (days)",
+             risk.table = T,
+             tables.height = .3) + ggtitle(paste0("OS: Univariate"))
+  print(survplot)
+}
+dev.off() 
+```
+
+```{r}
+library(stringr)
+library(plyr)
+library("gplots")
+
+topSeventeen <- toupper(c("Trim71","Xpo1","Ammecr1","Ccne2","Usp37","Zscan26","Ogt","Tspan15","Trim37","Pds5a","Fzd5","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1"))
+
+gene_of_intresest_idx <- match(topSeventeen, expdat$gene_name)
+heat_exp <- as.matrix(expdat_tpm[gene_of_intresest_idx,])
+rownames(heat_exp) <- topSeventeen
+
+# classify each sample as "High" or "Low" based on median of medians for the 17 genes in question
+tally_df <- data.frame(matrix(NA_character_, nrow = nrow(clin_hep), ncol = 17))
+colnames(tally_df) <- topSeventeen
+for (gname in topSeventeen) {
+  clin_hep$expression_class <- "Low"
+  gene_of_intresest_idx <- which(expdat$gene_name==gname)
+  med <- median(as.numeric(expdat_tpm[gene_of_intresest_idx,]))
+  clin_hep[which(expdat_tpm[gene_of_intresest_idx,] > med),"expression_class"] <- "High"
+  tally_df[,gname] <- clin_hep$expression_class
+}
+sample_name_classes <- c()
+for (sample in 1:nrow(tally_df)) {
+  new_class <- "Low"
+  if (sum(str_count(tally_df[sample,],"High")) >= 9) {
+    new_class <- "High"
+  }
+  sample_name_classes <- c(sample_name_classes,new_class)
+}
+# change the heatmap column names to be "Low" or "High"
+colnames(heat_exp) <- sample_name_classes
+# these classes will also be used in the survival curve below
+
+
+# re-order the samples manually - does not work well, for any permutation tried
+# get the means as the measure of how highly expressed the sample is
+#avgs <- colMeans(heat_exp)
+#rank_samples <- rank(-rank_means, ties.method="random")
+# re-order the heatmap samples
+#heat_exp <- heat_exp[,rank_samples]
+
+
+par(mar=c(1,1,1,1))
+Colors=c("royalblue4","green3","greenyellow", "white","orange", "darkorange3", "red4") #was blue, white, red
+Colors=colorRampPalette(Colors)(100)
+heatmap.2(heat_exp, trace="none", main="TPM Human Hepatocellular Carcinoma RNASeq",col=Colors, scale="row", dendrogram="both") # dendrogram="row",Colv = "False")
+
+
+# based on this heatmap, we will remove tspan15 as the outlier
+
+```
+
+```{r}
+
+# now try drawing the survival curve for single high-low classification for all samples
+
+pdfPath = "/home/alisa/Moll_liver/survival_top_16_single_category.pdf"
+pdf(file=pdfPath) 
+
+topSixteen <- toupper(c("Trim71","Xpo1","Ammecr1","Ccne2","Usp37","Zscan26","Ogt","Trim37","Pds5a","Fzd5","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1"))
+
+gene_of_intresest_idx <- match(topSixteen, expdat$gene_name)
+heat_exp <- as.matrix(expdat_tpm[gene_of_intresest_idx,])
+rownames(heat_exp) <- topSixteen
+
+# classify each sample as "High" or "Low" based on median of medians for the 16 genes in question
+tally_df <- data.frame(matrix(NA_character_, nrow = nrow(clin_hep), ncol = 16))
+colnames(tally_df) <- topSixteen
+for (gname in topSeventeen) {
+  clin_hep$expression_class <- "Low"
+  gene_of_intresest_idx <- which(expdat$gene_name==gname)
+  med <- median(as.numeric(expdat_tpm[gene_of_intresest_idx,]))
+  clin_hep[which(expdat_tpm[gene_of_intresest_idx,] > med),"expression_class"] <- "High"
+  tally_df[,gname] <- clin_hep$expression_class
+}
+sample_name_classes <- c()
+for (sample in 1:nrow(tally_df)) {
+  new_class <- "Low"
+  if (sum(str_count(tally_df[sample,],"High")) > 8) {
+    new_class <- "High"
+  }
+  sample_name_classes <- c(sample_name_classes,new_class)
+}
+
+
+clin_hep$expression_class <- sample_name_classes
+fit <- with(clin_hep, survfit(SurvObj ~ expression_class,
+                              type = "kaplan-meier"))
+
+survplot <- ggsurvplot(fit,
+             data = clin_hep,
+             pval = TRUE,
+             censor = TRUE,
+             surv.mean.line = "hv",
+             legend.title = "RNASeq, Top 16 Interaction Genes",
+             xlab = "Time (days)",
+             risk.table = T,
+             tables.height = .3) + ggtitle(paste0("OS: Human HCC Signature"))
+print(survplot)
+dev.off() 
+  
+```
+
+```{r}
+library(plyr)
+# count(clin_hep$ajcc_pathologic_stage)
+
+```

@@ -1,0 +1,141 @@
+---
+  title: "Interactions.Rmd"
+output: html_document
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## R Markdown
+```{r}
+
+#> QT - has nothing (myc and mutant p53 removed with treatment)
+#> QV - has both myc and mutant p53
+#> 
+#> KT - has nothing (myc removed with treatment)
+#> KV - has only myc
+
+
+#5QT, 2QV, 3KT, 3KV
+rnaDF <- read.csv("Moll_lab_liver_RNAseq.csv",header=TRUE)
+rnaDF <- rnaDF[rowSums(rnaDF[,3:15])>0,] # remove all the zeros
+ys <- data.matrix(rnaDF[,3:15])
+
+###############################################################
+# attempt #1 - model as myc, p53 and both - gives NA for the interaction term
+# myc
+#group1 <- as.factor(c("NO","NO","NO","NO","NO","YES","YES","NO","NO","NO","YES","YES","YES"))
+# mutant p53
+#group2 <- as.factor(c("NO","NO","NO","NO","NO","YES","YES","NO","NO","NO","NO","NO","NO"))
+#design <- model.matrix(~group1*group2)
+#fit<- lmFit(ys,design)
+#fit<- glm.fit(design,ys)
+#efit <- eBayes(fit)
+#coef(fit)
+
+
+################################################################
+# attempt #2 - variable a is loss of myc (1 for the T groups), variable b is gain of Q (1 for Q groups), variable c is is loss of p53 in the presence of myc - only for QT
+group_a <- as.factor(c("YES","YES","YES","YES","YES","NO","NO","YES","YES","YES","NO","NO","NO"))
+group_b <- as.factor(c("YES","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO"))
+group_c <- as.factor(c("YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO"))
+design <- model.matrix(~group_a+group_b+group_c)
+fit<- lmFit(ys,design)
+errors <- residuals(fit,ys)
+
+design_no_c <- model.matrix(~group_a+group_b)
+fit_no_c <- lmFit(ys,design_no_c)
+errors_no_c <- residuals(fit_no_c,ys)
+
+#  no p-value > 0.5 between the residuals of two models!!!!
+for (gene_n in 1:nrow(ys)) {
+  if (sum(ys[gene_n,]) > 0) {
+    res <- wilcox.test(errors[gene_n,], errors_no_c[gene_n,], paired = TRUE, alternative = "two.sided")
+    if (res$p.value < 0.5)
+      print(res$p.value)
+  }
+}
+
+
+# try with eBayes - (t-test: evidence for each contrast (coefficient being non-zero))
+efit <- eBayes(fit)
+
+counter <- 0
+coefs <- coef(fit)
+coefs_with_significant_c <- vector(mode="numeric", length=0)
+coefs_with_significant_c_df <- data.frame(matrix(ncol = 4, nrow = 0))
+coefs_no_significant_c <- vector(mode="numeric", length=0)
+p_adjusted <- p.adjust(efit$p.value[,4], method = c("fdr"))
+for (gene_n in 1:nrow(ys)) {
+  #if (sum(ys[gene_n,]) > 0) {
+    #if ((efit$p.value[gene_n,1] <= 0.05) & (efit$p.value[gene_n,2] <= 0.05) & (efit$p.value[gene_n,3] <= 0.05) & (efit$p.value[gene_n,4] <= 0.05)) {
+    if (p_adjusted[gene_n] <= 0.05) {
+      #print(efit$p.value[gene_n,])
+      #cat(gene_n, "\t", rnaDF[gene_n,2], "\t", coefs[gene_n,4],"\n")
+      counter <- counter + 1
+      coefs_with_significant_c <- c(coefs_with_significant_c, coefs[gene_n,4])
+      coefs_with_significant_c_df[counter,] <- c(rnaDF$Ensemble.ID[gene_n], rnaDF$Gene[gene_n], as.numeric(coefs[gene_n,4]), p_adjusted[gene_n])
+    } else {
+      coefs_no_significant_c <- c(coefs_no_significant_c, coefs[gene_n,4])
+    }
+  #}
+}
+colnames(coefs_with_significant_c_df) <- c("EnsembleID","Gene","Interaction","P-value-FDR-adjusted")
+sorted_interactions_corrected <- coefs_with_significant_c_df[order(as.numeric(coefs_with_significant_c_df$Interaction),decreasing=TRUE),]
+
+write.csv(sorted_interactions_corrected, "~/Moll_liver/top_interactions.csv", row.names=FALSE)
+# now take just the top two and the bottom 18
+most_sig <- sorted_interactions_corrected # now take all [c(1:2,116:133),]
+
+heatmap_df <- rnaDF[rnaDF$Gene %in% most_sig$Gene,]
+heatmap_data <- data.matrix(heatmap_df[3:15])
+rownames(heatmap_data) <- heatmap_df$Gene
+
+library("gplots")
+#Colors=c("royalblue4","green3","greenyellow", "white","orange", "darkorange3", "red4") #was blue, white, red
+Colors <- c("blue","white","red")
+Colors=colorRampPalette(Colors)(100)
+heatmap.2(heatmap_data, trace="none", main="Normalized Counts of Moll Mouse Liver Data",col=Colors, scale="row")
+
+# now remove three bottom genes that have a different pattern:
+#Fbxw11, Malat1, and Nop16
+# for the subsequent human analysis
+
+##################################
+
+# now try to do GSEA
+library(msigdbr)
+library(fgsea)
+library(tidyverse)
+# all_gene_sets = msigdbr(species = "Mus musculus")
+#msigdbr_df = msigdbr(species = "mouse", category = "H")
+msigdbr_df = msigdbr(species = "mouse")
+# msigdbr_list = split(x = msigdbr_df$entrez_gene, f = msigdbr_df$gs_name)
+pathwaysM = split(x = msigdbr_df$gene_symbol, f = msigdbr_df$gs_name)
+ranks <- setNames(coefs[,4],rnaDF$Gene) # Ensemble.ID)
+fgseaRes <- fgsea(pathways = pathwaysM, stats = ranks, minSize  = 15, maxSize  = 500)
+
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(pathwaysM[topPathways], ranks, fgseaRes, gseaParam=0.5)
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+res <- fgseaResTidy[fgseaResTidy$padj<=0.1,]
+
+ggplot(res, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top Up (no significant Down) mouse pathways NES from GSEA\nFor loss of mutant p53 in the presence of MYC") + 
+  theme_minimal()
+
+
+###############################################################
+```

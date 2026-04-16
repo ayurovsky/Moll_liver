@@ -6,6 +6,149 @@ output: html_document
   ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+```{r}
+detach("package:SSCD", unload = TRUE, character.only = TRUE)
+devtools::install_github("ayurovsky/SSCD")
+library(SSCD)
+
+TODO: add documentation - add lines and run Roxygen2:
+TODO: make rmd file with lines below
+TODO: test in standalone R
+
+small_mix <- Dataset_Resampled_Gtex$ex[1:100,]
+compartment_n <- nrow(Dataset_Resampled_Gtex$trueH)
+
+improvedW <- SSCD::SSCD(small_mix, compartments_n = 4, nrun = 200, nmf_seed = 124578, mvg = 1000, parallel_n = 10)
+
+
+
+my_optimization <- function(data, compartments_n = 3, nrun = 200, nmf_seed = 124578, mvg = 1000, parallel_n = 2, ...) {
+
+  data_nmf <- aged::fastanmf(data, rank = compartments_n, nrun = nrun, nmf_seed = nmf_seed, mvg = mvg, ...)
+  
+  
+  ##############
+  # get h and w
+  w = basis(data_nmf)
+  h = coef(data_nmf)
+  ##############
+  
+  ##############
+  # normalization
+  
+  # normalize columns of learned W
+  median_w = apply(w, 2, median)
+  lambda = 100/median_w
+  B = diag(lambda)
+  B.inv = diag(1/lambda)
+  w_new = w %*% B
+  h_new = B.inv %*% h
+  
+  # normalize to have H colSums close to 1
+  h_sums <- colSums(h_new)
+  mean_sum <- mean(h_sums)
+  w <- w_new * mean_sum
+  h <- h_new / mean_sum
+  ##############
+  
+  ##############
+  # Creates list of Ws for every sample (for NMF, all Ws are the same)
+  resultW <- lapply(seq_len(ncol(h)), function(X) w)
+  resultH <- apply(h, 2, FUN = sum_to_1)
+  ##############
+  
+  
+  ##############################################
+  # sets the variables
+  samples_n <- ncol(h)
+  genes_n <- nrow(trueMixed)
+  ##############
+  
+  improvedW <- run_compartment_optimization_l(data, compartments_n = compartments_n, samples_n = samples_n, genes_n = genes_n, resultH = resultH, resultW = resultW, parallel_n = parallel_n)
+  return(improvedW)
+}
+
+```
+
+```{r}
+library(ROI)
+library(ROI.plugin.alabama)
+library(foreach)
+library(doParallel)
+# carefull here!!!!
+
+run_compartment_optimization_l <-  function(trueMixed, compartments_n, samples_n, genes_n, resultH, resultW, parallel_n=2) {
+
+  registerDoParallel(parallel_n)
+  
+  print("Starting Sample Specific Compartment Optimization...")
+  start_time <- Sys.time()
+  improvedW <- foreach (sample_n=1:samples_n) %dopar% {
+    sample_w <- vector()
+    for (gene_n in 1:genes_n) {
+      mixed <- trueMixed[gene_n,sample_n]
+      nmf_h <- resultH[,sample_n]
+      nmf_w <- resultW[[sample_n]][gene_n,]
+      
+      # build objective function
+      eval_f <- "function(x) { return ( "
+      for (i in 1:(compartments_n-1)){
+         eval_f <- paste0(eval_f, "((x[", i ,"] - ", nmf_w[i], ")/", nmf_w[i], ")^2 + ")
+      }
+      eval_f <- paste0(eval_f,"((x[",i+1,"] - ", nmf_w[i+1], ")/", nmf_w[i+1], ")^2 ) }")
+      eval_f <- eval(parse(text = eval_f)) #noquote(eval_f)
+      
+      # equality constraints
+      eval_g_eq <- "function(x) { return ( "
+      for (i in 1:(compartments_n-1)){
+        eval_g_eq <- paste0(eval_g_eq, "x[", i ,"] * ", nmf_h[i], " + ")
+      }
+      eval_g_eq <-  paste0(eval_g_eq, "x[", i+1 ,"] * ", nmf_h[i+1], " - ", mixed, ") }")
+      eval_g_eq <- eval(parse(text = eval_g_eq)) #noquote(eval_g_eq)
+      
+      # lower bound constraints
+      
+      #initial values
+      x0 <- as.vector(nmf_w)
+      
+      nlp <- OP(objective = F_objective(eval_f, n=compartments_n), 
+              constraints = F_constraint(eval_g_eq, dir = "==", rhs = 0), bounds = V_bound(lb = rep(0.0001, compartments_n)))
+      
+      sol <- ROI_solve(nlp, solver = "alabama", start = x0)
+      
+      neww <- as.vector(sol$solution)
+      
+      if (sol$status$msg$symbol != "SUCCESS") {
+        neww <- nmf_w
+      }
+      
+      sample_w <- rbind(sample_w, neww)
+      rownames(sample_w)[gene_n] <- rownames(trueMixed)[gene_n]
+    }
+    sample_w
+  }
+  end_time <- Sys.time()
+  print(end_time - start_time)
+  
+  return(improvedW)
+
+}
+
+
+```
+
+
+```{r}
+Data processing was performed in R 4.2.1.  Normalized bulk RNAseq data from mouse liver tumors, groups QT, QV, KT, and QV were analyzed to determine a gene signature.  Dataset was processed to remove genes with zero expression across all samples.  A linear model was fit to capture the interaction between MYC and mutant p53.  Three variables were defined for the four groups: "lost MYC", "had mutant p53", and "lost mutant p53 in the presence of MYC". The coefficients of the third variable from the model, both positive and negative, provide the measure of interaction between MYC and mutant p53.  eBays was used to get the p-values the coefficients.  Multiple hypothesis adjustment was applied to the p-values, and a list of candidate genes was obtained, including only the genes where the interaction term had an adjusted p-value < 0.05.
+
+Top twenty genes were selected for futher analysis, based on the absolute value of the interaction coefficient.  
+
+Hepatocellular Carcinoma dataset (TCGA-LIHC) was obtained using GDCquery. 8 samples where the primary diagnosis was not Hepatocellular carcinoma were removed. 6 further samples were removed because they did not have TPM expression data. 5 more samples were removed because of stage IV cancer classification.  The final dataset contained 358 samples. For each sample, we classified each of the top twenty genes as "High" or "Low", depending on wether their expression was above or below the median for this gene across all samples.  Each sample was given then given a label "High" or "Low", depending on its majority classification for the twenty genes.  
+
+Survival analysis was performed on the human samples with the "High"/"Low" classification using the survfit and ggsurvplot packages.  
+
+Analysis of the mouse data and human data heatmaps resulted in 4 genes being identified as outliers and removed from the signature, resulting in a total of 16 genes for the interaction signature.  Gene-level and sample-level classification was redone for these 16 genes for the final survival analysis results.   
+```
 
 
 
@@ -88,17 +231,29 @@ sorted_interactions_corrected <- coefs_with_significant_c_df[order(as.numeric(co
 
 write.csv(sorted_interactions_corrected, "~/Moll_liver/top_interactions.csv", row.names=FALSE)
 # now take just the top two and the bottom 18
-most_sig <- sorted_interactions_corrected # now take all [c(1:2,116:133),]
+most_sig <- sorted_interactions_corrected[c(1:2,116:133),] # now take all
 
 heatmap_df <- rnaDF[rnaDF$Gene %in% most_sig$Gene,]
 heatmap_data <- data.matrix(heatmap_df[3:15])
 rownames(heatmap_data) <- heatmap_df$Gene
 
+# now for the final signature, just take the 16 genes
+topSixteen <- c("Trim71","Xpo1","Ammecr1","Ccne2","Usp37","Zscan26","Ogt","Trim37","Pds5a","Fzd5","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1")
+
+
+heatmap_df <- rnaDF[rnaDF$Gene %in% topSixteen,]
+heatmap_data <- data.matrix(heatmap_df[3:15])
+rownames(heatmap_data) <- heatmap_df$Gene
+
+name_order <- c("QV_7263","QV_7342","KV_7269","KV_7346","KV_7354","QT_7275","QT_7283","QT_7288","QT_7291","QT_7337","KT_7365","KT_7355","KT_7344")
+heatmap_data <- heatmap_data[,name_order]
+
 library("gplots")
 #Colors=c("royalblue4","green3","greenyellow", "white","orange", "darkorange3", "red4") #was blue, white, red
 Colors <- c("blue","white","red")
 Colors=colorRampPalette(Colors)(100)
-heatmap.2(heatmap_data, trace="none", main="Normalized Counts of Moll Mouse Liver Data",col=Colors, scale="row")
+heatmap.2(heatmap_data, trace="none", main="Normalized Counts",col=Colors, scale="row", margins=c(6,6),Colv=NA)
+dev.off()
 
 # now remove three bottom genes that have a different pattern:
 #Fbxw11, Malat1, and Nop16

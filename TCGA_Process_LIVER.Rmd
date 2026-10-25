@@ -337,7 +337,7 @@ heatmap.2(heat_exp_hilo, main="Human Hepatocellular Carcinoma RNASeq",col=Colors
 ```
 
 ```{r}
-# these are the files that Laura sent
+# these are the files that Laura sent - currently not used for the paper
 clin <- read.delim(
   "/home/alisa/Moll_liver/hcc_tcga_gdc_clinical_data.tsv",
   stringsAsFactors = FALSE
@@ -459,6 +459,7 @@ heatmap.2(heat_exp, main="Human Hepatocellular Carcinoma RNASeq",col=Colors, sca
 
 ```{r}
 # now try the cBioPortal Flow
+# What I currently used for April 2026 paper
 expdat <- read.delim("/home/alisa/Moll_liver/data_mrna_seq_v2_rsem.txt", comment.char = "#",
   check.names = FALSE,
   stringsAsFactors = FALSE
@@ -565,7 +566,7 @@ survplot
 library(gplots)
 
 # change the heatmap column names to be "Low" or "High"
-keep_ids <- clin_hilo$PATIENT_ID
+keep_ids <- clin_hep$PATIENT_ID
 
 heat_exp_hilo <- heat_exp[
   , substr(colnames(heat_exp), 1, 12) %in% keep_ids
@@ -666,6 +667,14 @@ df$MYC_CNA <- myc_vals[df$patientId]
 write.csv(df,
           file = "hcc_summary.csv",
           row.names = FALSE)
+tab <- table(
+  Group = df$group,
+  TP53  = df$TP53_missense
+)
+res <- fisher.test(tab)
+odds_ratio <- res$estimate
+p_value <- res$p.value
+1/res$estimate
 
 ```
 

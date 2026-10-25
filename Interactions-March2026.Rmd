@@ -1,0 +1,184 @@
+---
+  title: "Interactions.Rmd"
+output: html_document
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#TODO: redo the texg
+#Data processing was performed in R 4.2.1.  Normalized bulk RNAseq data from mouse liver tumors, groups QT, QV, KT, and QV were analyzed to determine a gene signature.  Dataset was processed to remove genes with zero expression across all samples.  A linear model was fit to capture the interaction between MYC and mutant p53.  Three variables were defined for the four groups: "lost MYC", "had mutant p53", and "lost mutant p53 in the presence of MYC". The coefficients of the third variable from the model, both positive and negative, provide the measure of interaction between MYC and mutant p53.  eBays was used to get the p-values the coefficients.  Multiple hypothesis adjustment was applied to the p-values, and a list of candidate genes was obtained, including only the genes where the interaction term had an adjusted p-value < 0.05.
+
+#Top twenty genes were selected for futher analysis, based on the absolute value of the interaction coefficient.  
+
+#Hepatocellular Carcinoma dataset (TCGA-LIHC) was obtained using GDCquery. 8 samples where the primary diagnosis was not Hepatocellular carcinoma were removed. 6 further samples were removed because they did not have TPM expression data. 5 more samples were removed because of stage IV cancer classification.  The final dataset contained 358 samples. For each sample, we classified each of the top twenty genes as "High" or "Low", depending on wether their expression was above or below the median for this gene across all samples.  Each sample was given then given a label "High" or "Low", depending on its majority classification for the twenty genes.  
+
+#Survival analysis was performed on the human samples with the "High"/"Low" classification using the survfit and ggsurvplot packages.  
+
+#Analysis of the mouse data and human data heatmaps resulted in 4 genes being identified as outliers and removed from the signature, resulting in a total of 16 genes for the interaction signature.  Gene-level and sample-level classification was redone for these 16 genes for the final survival analysis results.   
+```
+
+
+## R Markdown
+```{r}
+
+#> QT - has nothing (myc and mutant p53 removed with treatment)
+#> QV - has both myc and mutant p53
+#> 
+#> KT - has nothing (myc removed with treatment)
+#> KV - has only myc
+
+# 8 QV, 6 QTD, 9 KV, 8 KT, 3 QTF, 5 QTM (39 samples total)
+#rnaDF <- read.csv("/home/alisa/Moll_liver/NormCountsFiltered\ Alisa\ order-May6.csv",header=TRUE)
+#rnaDF <- rnaDF[rowSums(rnaDF[,2:40])>0,] # remove all the zeros
+#ys <- data.matrix(rnaDF[,2:40])
+
+# 2QV, 5QT, 3KV, 3KT (13 samples total)
+rnaDF <- read.csv("/home/alisa/Moll_liver/HCC_LAURA_2018ONLY_normCounts_09April2026.csv",header=TRUE)
+rnaDF <- rnaDF[rowSums(rnaDF[,2:14])>0,] # remove all the zeros
+ys <- data.matrix(rnaDF[,2:14])
+
+# 8 QV, 5 QT, 9 KV, 6 KT, 3 QTF, 5 QTM (36 samples total)
+#rnaDF <- read.csv("/home/alisa/Moll_liver/HCC_LAURA_COMBO_BT2_HTSeq_normCounts\ for\ Alisa\ all\ batches.csv",header=TRUE)
+#rnaDF <- rnaDF[rowSums(rnaDF[,2:37])>0,] # remove all the zeros
+#ys <- data.matrix(rnaDF[,2:37])
+
+################################################################
+#  variable a is "had mutp53", variable b is "lost  myc", and variable c is "lost mutp53"
+#group_a <- as.factor(c("YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","YES","YES"))
+
+#group_b <- as.factor(c("NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","YES","YES","NO","NO","NO","YES","YES","YES","YES","YES"))
+#group_c <- as.factor(c("NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","NO","NO","NO","NO","NO"))
+
+
+group_a <- as.factor(c("YES","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO"))
+
+group_b <- as.factor(c("NO","NO","YES","YES","YES","YES","YES","NO","NO","NO","YES","YES","YES"))
+
+group_c <- as.factor(c("NO","NO","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO"))
+
+
+#group_a <- as.factor(c("YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","YES","YES"))
+
+#group_b <- as.factor(c("NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","YES","NO","NO","NO","YES","YES","YES","YES","YES"))
+
+#group_c <- as.factor(c("NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","YES","YES","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","NO","YES","YES","YES","NO","NO","NO","NO","NO"))
+
+design <- model.matrix(~group_a+group_b+group_c)
+library(limma)
+fit<- lmFit(ys,design)
+errors <- residuals(fit,ys)
+
+#design_no_c <- model.matrix(~group_a+group_b)
+#fit_no_c <- lmFit(ys,design_no_c)
+#errors_no_c <- residuals(fit_no_c,ys)
+
+#  no p-value > 0.5 between the residuals of two models!!!!
+#for (gene_n in 1:nrow(ys)) {
+#  if (sum(ys[gene_n,]) > 0) {
+#    res <- wilcox.test(errors[gene_n,], errors_no_c[gene_n,], paired = TRUE, alternative = "two.sided")
+#    if (res$p.value < 0.5)
+#      print(res$p.value)
+#  }
+#}
+
+
+# try with eBayes - (t-test: evidence for each contrast (coefficient being non-zero))
+efit <- eBayes(fit)
+
+counter <- 0
+coefs <- coef(fit)
+coefs_with_significant_c <- vector(mode="numeric", length=0)
+coefs_with_significant_c_df <- data.frame(matrix(ncol = 3, nrow = 0))
+p_adjusted <- p.adjust(efit$p.value[,4], method = c("fdr"))
+p_unadjusted <- efit$p.value[,4]
+for (gene_n in 1:nrow(ys)) {
+    if (p_adjusted[gene_n] <= 0.05) {
+      counter <- counter + 1
+      coefs_with_significant_c <- c(coefs_with_significant_c, coefs[gene_n,4])
+      coefs_with_significant_c_df[counter,] <- c(rnaDF$gene_name[gene_n], as.numeric(coefs[gene_n,4]), p_adjusted[gene_n])
+    } 
+}
+colnames(coefs_with_significant_c_df) <- c("Gene","Interaction","P-value-FDR-adjusted")
+sorted_interactions_corrected <- coefs_with_significant_c_df[order(as.numeric(coefs_with_significant_c_df$Interaction),decreasing=TRUE),]
+
+# got 139 with just the original samples
+
+# just 42 with all the groups
+
+#write.csv(sorted_interactions_corrected, "~/Moll_liver/top_interactions_BT2_HTSeq_normCounts_only_first_batch.csv", row.names=FALSE)
+write.csv(sorted_interactions_corrected, "~/Moll_liver/top_interactions_09April2026.csv", row.names=FALSE)
+
+# now take just the top four and the bottom 20
+#most_sig <- sorted_interactions_corrected[c(1:4,120:139),]
+
+# now take top 4 (smallest coeffiecient) and bottom 21 (largest coefficient)
+most_sig <- sorted_interactions_corrected[c(1:4,129:149),]
+
+heatmap_df <- rnaDF[rnaDF$gene_name %in% most_sig$Gene,]
+heatmap_data <- data.matrix(heatmap_df[2:14])
+#heatmap_data <- data.matrix(heatmap_df[2:37])
+rownames(heatmap_data) <- heatmap_df$gene_name
+
+# now for the final signature, just take the 16 genes
+ # topSixteen <- c("Trim71","Xpo1","Ammecr1","Ccne2","Usp37","Zscan26","Ogt","Trim37","Pds5a","Fzd5","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1")
+
+# new top
+#new_top_names <- c("0610012G03Rik", "Abcf3", "Aldh7a1", "Anxa6", "Dusp23", "Fggy", "Flad1", "Gm4948", "Mtarc2", "Pygl", "Tm9sf2","Ubac2","Usp4")
+new_top_names <- c("Xpo1","Ammecr1","Ccne2","Usp37","Ogt","Trim37","Brca2","Phip","Tbc1d1","Rnf38","Fam193b","Alkbh1", "S100pbp", "Ubr7", "Mki67")
+heatmap_df <- rnaDF[rnaDF$gene_name %in% new_top_names,]
+heatmap_data <- data.matrix(heatmap_df[2:14])
+rownames(heatmap_data) <- heatmap_df$gene_name
+
+#name_order <- c("QV_7263","QV_7342","KV_7269","KV_7346","KV_7354","QT_7275","QT_7283","QT_7288","QT_7291","QT_7337","KT_7365","KT_7355","KT_7344")
+#heatmap_data <- heatmap_data[,name_order]
+
+library("gplots")
+#Colors=c("royalblue4","green3","greenyellow", "white","orange", "darkorange3", "red4") #was blue, white, red
+Colors <- c("blue","white","red")
+Colors=colorRampPalette(Colors)(100)
+fig <- heatmap.2(heatmap_data, trace="none", main="Normalized Counts",col=Colors, scale="row", margins=c(6,6),Colv=NA)
+
+#dev.off()
+
+# now remove three bottom genes that have a different pattern:
+#Fbxw11, Malat1, and Nop16
+# for the subsequent human analysis
+
+##################################
+
+# now try to do GSEA
+library(msigdbr)
+library(fgsea)
+library(tidyverse)
+# all_gene_sets = msigdbr(species = "Mus musculus")
+#msigdbr_df = msigdbr(species = "mouse", category = "H")
+msigdbr_df = msigdbr(species = "mouse")
+# msigdbr_list = split(x = msigdbr_df$entrez_gene, f = msigdbr_df$gs_name)
+pathwaysM = split(x = msigdbr_df$gene_symbol, f = msigdbr_df$gs_name)
+ranks <- setNames(coefs[,4],rnaDF$Gene) # Ensemble.ID)
+fgseaRes <- fgsea(pathways = pathwaysM, stats = ranks, minSize  = 15, maxSize  = 500)
+
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(pathwaysM[topPathways], ranks, fgseaRes, gseaParam=0.5)
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+res <- fgseaResTidy[fgseaResTidy$padj<=0.1,]
+
+ggplot(res, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top Up (no significant Down) mouse pathways NES from GSEA\nFor loss of mutant p53 in the presence of MYC") + 
+  theme_minimal()
+
+
+###############################################################
+```
